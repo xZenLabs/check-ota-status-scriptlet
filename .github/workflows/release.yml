@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      scriptlet:
+        description: Scriptlet filename to release
+        required: false
+
+env:
+  SCRIPTLET: zen-ota-check.sh
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve scriptlet
+        id: scriptlet
+        run: |
+          name="${{ github.event.inputs.scriptlet }}"
+          if [ -z "$name" ]; then
+            name="${SCRIPTLET}"
+          fi
+          if [ ! -f "$name" ]; then
+            echo "::error::Scriptlet '$name' not found"
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Read version from scriptlet
+        id: version
+        run: |
+          ver=$(grep -m1 -E '^#[[:space:]]*Version:' "${{ steps.scriptlet.outputs.name }}" \
+            | sed -E 's/^#[[:space:]]*Version:[[:space:]]*//' \
+            | tr -d '[:space:]')
+          if [ -z "$ver" ]; then
+            echo "::error::No '# Version:' line found in ${{ steps.scriptlet.outputs.name }}"
+            exit 1
+          fi
+          if ! echo "$ver" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::error::Version '$ver' must be X.Y or X.Y.Z"
+            exit 1
+          fi
+          next="v${ver}"
+          if git rev-parse "$next" >/dev/null 2>&1; then
+            echo "::error::Tag $next already exists. Bump '# Version:' in the scriptlet."
+            exit 1
+          fi
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create release and upload scriptlet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.next }}" \
+            "${{ steps.scriptlet.outputs.name }}" \
+            --title "${{ steps.version.outputs.next }}" \
+            --target "${GITHUB_SHA}" \
+            --generate-notes
